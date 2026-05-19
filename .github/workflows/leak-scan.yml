@@ -1,0 +1,75 @@
+name: Leak scan
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+env:
+  # Opt into Node 24 now — Node 20 is deprecated on GitHub Actions runners
+  # (default switches 2026-06-02, removed 2026-09-16). Silences the warning
+  # until actions/checkout publishes a Node-24-native release.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Scan PR-added lines for operator/identity leak markers
+        env:
+          # Pattern is stored as a repo secret so Actions auto-masks it in
+          # step logs (including env-var setup echoes). Edit via
+          # `gh secret set LEAK_PATTERN`. Both Actions and Dependabot secret
+          # pools must be set for the workflow to work on Dependabot PRs.
+          LEAK_PATTERN: ${{ secrets.LEAK_PATTERN }}
+          # Optional list of substrings to strip from added lines BEFORE
+          # the pattern check — one substring per line. These are tokens
+          # the repo has accepted as canonically-public (e.g. a bucket
+          # name whose label inherits an operator marker but is itself
+          # not sensitive). Empty / unset means no stripping. Each token
+          # is removed by literal substring match, not regex. The strip
+          # is narrow: only the literal token is removed, so adjacent
+          # markers in the same line still trigger.
+          LEAK_ACCEPTED: ${{ secrets.LEAK_ACCEPTED }}
+        run: |
+          set -uo pipefail
+          base="${{ github.event.pull_request.base.sha }}"
+          head="${{ github.event.pull_request.head.sha }}"
+
+          if [ -z "$LEAK_PATTERN" ]; then
+            echo "::error::LEAK_PATTERN secret is unset on this repo. Set it via 'gh secret set LEAK_PATTERN' (and 'gh secret set LEAK_PATTERN --app dependabot' to cover Dependabot PRs)."
+            exit 1
+          fi
+
+          # Only scans lines ADDED in this PR (lines starting with '+' but not
+          # '+++' file headers). Pre-existing matches in untouched lines are
+          # ignored — that's the design.
+          added=$(git diff "$base..$head" --no-color | grep -E '^\+[^+]' || true)
+
+          # Strip accepted-token substrings before grepping. Loop because
+          # LEAK_ACCEPTED can hold multiple tokens (one per line). Sed
+          # delimiter is `|` so tokens containing `/` work unchanged;
+          # tokens containing `|` are not supported.
+          cleaned="$added"
+          if [ -n "$LEAK_ACCEPTED" ]; then
+            while IFS= read -r token; do
+              [ -z "$token" ] && continue
+              cleaned=$(printf '%s' "$cleaned" | sed "s|${token}||g")
+            done <<< "$LEAK_ACCEPTED"
+          fi
+
+          if echo "$cleaned" | grep -qiE "$LEAK_PATTERN"; then
+            # IMPORTANT: do not echo matched content. Actions logs are public
+            # and forever-retained — printing the matched lines would re-leak
+            # the exact content we're catching. Authors should run the scan
+            # locally to see what triggered it.
+            echo "::error::Leak marker detected in PR-added lines. Run the leak scan locally against your diff to identify and remove the offending lines."
+            exit 1
+          fi
+          echo "OK: no leak markers in added lines."

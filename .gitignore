@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+venv/
+.eggs/
+
+# Secrets and private docs
+.env
+.env.*
+CLAUDE.md
+config.json
+secrets.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Local config
+.claude/
