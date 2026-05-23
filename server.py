@@ -656,7 +656,12 @@ async def member_trades(bioguide_id: str) -> str:
 async def search_lobbying(query: str, year: int | None = None) -> str:
     """Search lobbying disclosure filings (~1.9M filings, 1999-2026) by
     client or registrant name. Returns registrant, client, issue areas,
-    and reported income/expenses.
+    and filing-level income/expense amounts.
+
+    Scope: LD-2 quarterly activity reports only (the "lobbying spending" public
+    concept). LD-203 contribution reports are excluded from results. To see all
+    filing types in custom SQL, query lobbying_filings without the
+    filing_type GLOB '[1234Q]*' filter.
 
     Args:
         query: Client or registrant name to search for.
@@ -666,22 +671,29 @@ async def search_lobbying(query: str, year: int | None = None) -> str:
     if year:
         where = f"AND la.filing_year = {int(year)}"
 
+    # FTS match on the activity table; JOIN to lobbying_filings for canonical
+    # filing-level amount + LD-2 scope filter; DISTINCT collapses multiple
+    # activity rows from the same filing into one result row.
     count_sql = f"""
-        SELECT COUNT(*) AS n
+        SELECT COUNT(DISTINCT la.filing_uuid) AS n
         FROM lobbying_activities la
+        JOIN lobbying_filings f ON f.filing_uuid = la.filing_uuid
         WHERE la.rowid IN (SELECT rowid FROM lobbying_fts WHERE lobbying_fts MATCH :q)
+          AND f.filing_type GLOB '[1234Q]*'
         {where}
     """
     sql = f"""
-        SELECT la.registrant_name, la.client_name, la.filing_year,
+        SELECT DISTINCT la.registrant_name, la.client_name, la.filing_year,
                la.issue_code, la.specific_issues,
-               la.income_amount
+               f.income_amount, f.expense_amount
         FROM lobbying_activities la
+        JOIN lobbying_filings f ON f.filing_uuid = la.filing_uuid
         WHERE la.rowid IN (
             SELECT rowid FROM lobbying_fts WHERE lobbying_fts MATCH :q
         )
+          AND f.filing_type GLOB '[1234Q]*'
         {where}
-        ORDER BY la.income_amount DESC
+        ORDER BY COALESCE(f.income_amount, f.expense_amount) DESC
         LIMIT {DEFAULT_LIMIT}
     """
     count_rows = await _query(BASE_OPENREGS, DB_OPENREGS, count_sql, {"q": query})
@@ -691,16 +703,26 @@ async def search_lobbying(query: str, year: int | None = None) -> str:
     lines = []
     for r in rows:
         issues = (r.get("specific_issues") or "")[:150]
+        # Show whichever side of the income/expense XOR is populated.
+        # If both are NULL (shouldn't happen on LD-2 but be defensive), show "—".
+        inc = r.get("income_amount")
+        exp = r.get("expense_amount")
+        if inc:
+            money = f"Income: {_fmt_money(inc)}"
+        elif exp:
+            money = f"Expenses: {_fmt_money(exp)} (in-house)"
+        else:
+            money = "—"
         lines.append(
             f"  {r.get('registrant_name','?')} for {r.get('client_name','?')}"
-            f"  ({r.get('filing_year','')})  |  {_fmt_money(r.get('income_amount'))}\n"
+            f"  ({r.get('filing_year','')})  |  {money}\n"
             f"    Issue: {r.get('issue_code','')} — {issues}"
             f"{'...' if len(r.get('specific_issues','') or '') > 150 else ''}"
         )
     if not lines:
         return f"No lobbying filings found matching '{query}'."
     if total > len(lines):
-        header = f"Found {total:,} filing(s) (showing top {len(lines)} by income):"
+        header = f"Found {total:,} filing(s) (showing top {len(lines)} by amount):"
     else:
         header = f"Found {total:,} filing(s):"
     return header + "\n\n" + "\n\n".join(lines)
