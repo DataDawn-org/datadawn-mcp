@@ -362,8 +362,17 @@ async def org_officers(ein: str) -> str:
         ein: 9-digit Employer Identification Number.
     """
     ein = ein.replace("-", "").strip()
+    # 5-column comp schema per Bug #3 fix (decisions_log §64).
+    # reportable_comp_filing_org = W-2 from filing org (all forms);
+    # other_comp = sum of remaining IRS comp boxes per form (Form 990:
+    # related-org W-2 + other comp; 990-EZ/PF: benefits + expense_account).
     sql = f"""
-        SELECT o.person_name, o.title, o.compensation, o.benefits,
+        SELECT o.person_name, o.title,
+               o.reportable_comp_filing_org,
+               (COALESCE(o.reportable_comp_related_org, 0)
+                + COALESCE(o.other_compensation, 0)
+                + COALESCE(o.benefits, 0)
+                + COALESCE(o.expense_account, 0)) AS other_comp,
                r.tax_year, r.org_name
         FROM officers o
         JOIN returns r ON o.object_id = r.object_id
@@ -372,7 +381,7 @@ async def org_officers(ein: str) -> str:
             SELECT MAX(r2.tax_year) FROM returns r2
             WHERE r2.ein = :ein AND r2.return_type IN ('990','990EZ','990PF')
         )
-        ORDER BY o.compensation DESC
+        ORDER BY o.reportable_comp_filing_org DESC
         LIMIT 50
     """
     rows = await _query(BASE_990, DB_990, sql, {"ein": ein})
@@ -384,11 +393,11 @@ async def org_officers(ein: str) -> str:
     year = rows[0].get("tax_year", "?")
     lines = [f"Officers/Directors for {org} (EIN: {ein}, Tax Year {year}):\n"]
     for r in rows:
-        comp = _fmt_money(r.get("compensation"))
-        ben = _fmt_money(r.get("benefits"))
+        comp = _fmt_money(r.get("reportable_comp_filing_org"))
+        other = _fmt_money(r.get("other_comp"))
         lines.append(
             f"  {r.get('person_name','?')}  |  {r.get('title','?')}"
-            f"  |  Compensation: {comp}  |  Benefits: {ben}"
+            f"  |  Comp from Filing Org: {comp}  |  Other Comp: {other}"
         )
     return "\n".join(lines)
 
