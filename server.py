@@ -450,6 +450,10 @@ async def run_990_sql(sql: str) -> str:
     you want future commitments. The grants.ein is the FUNDER, not the
     recipient.
 
+    COVERAGE: the contractors and top_employees tables are parsed from
+    Form 990-PF filings only — an empty result for a Form 990/990-EZ
+    filer means not-yet-parsed, NOT "none reported."
+
     Args:
         sql: A SELECT query to run. Must be read-only. Include LIMIT clause.
     """
