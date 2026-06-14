@@ -102,7 +102,14 @@ def _fmt_rows(rows: list[dict], max_rows: int = 50) -> str:
     if not rows:
         return "No results found."
 
+    total = len(rows)                      # capture BEFORE truncation so we can signal "of N"
     rows = rows[:max_rows]
+    # Columns present in the result set but NULL/empty in EVERY returned row.
+    # Surfaced explicitly so an agent's coverage query ("is column X populated?")
+    # isn't silently misled into reading an empty column as an absent one (the
+    # per-row null-skip below keeps wide tables readable but hides this on its own).
+    all_keys = {k for r in rows for k in r}
+    empty_cols = sorted(k for k in all_keys if all(r.get(k) in (None, "") for r in rows))
     lines: list[str] = []
     for i, row in enumerate(rows, 1):
         parts = []
@@ -112,8 +119,14 @@ def _fmt_rows(rows: list[dict], max_rows: int = 50) -> str:
             parts.append(f"  {k}: {v}")
         lines.append(f"--- Result {i} ---")
         lines.extend(parts)
-    count_note = f"\n({len(rows)} result{'s' if len(rows) != 1 else ''} shown)"
-    return "\n".join(lines) + count_note
+    notes: list[str] = []
+    if total > max_rows:
+        notes.append(f"showing first {len(rows)} of {total} rows — add LIMIT or refine to see more")
+    else:
+        notes.append(f"{len(rows)} result{'s' if len(rows) != 1 else ''} shown")
+    if empty_cols:
+        notes.append(f"columns present but empty in all rows: {', '.join(empty_cols)}")
+    return "\n".join(lines) + "\n(" + "; ".join(notes) + ")"
 
 
 def _fmt_money(val: Any) -> str:
