@@ -30,6 +30,45 @@ logging.basicConfig(
 )
 logger = logging.getLogger("datadawn-mcp")
 
+
+# ---------------------------------------------------------------------------
+# Tool-call logging decorator: per-call tool name + elapsed-ms instrumentation
+# (logs arg names only, never values).
+#
+# FastMCP introspects the wrapped function via inspect.signature() to build
+# the tool's JSON-schema; functools.wraps + an explicit __signature__ set
+# preserves that introspection through this decorator chain.
+# ---------------------------------------------------------------------------
+import functools
+import inspect
+import time
+
+
+def _log_tool_call(fn):
+    """Wrap an async tool function to log tool_call / tool_done with elapsed ms."""
+    sig = inspect.signature(fn)
+
+    @functools.wraps(fn)
+    async def wrapper(*args, **kwargs):
+        start = time.monotonic()
+        # arg names only; never log values (could contain SQL, names, etc).
+        arg_keys = sorted(kwargs.keys()) if kwargs else []
+        logger.info("tool_call name=%s args=%s", fn.__name__, arg_keys)
+        try:
+            result = await fn(*args, **kwargs)
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+            logger.info("tool_done name=%s ms=%d", fn.__name__, elapsed_ms)
+            return result
+        except Exception:
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+            logger.exception("tool_error name=%s ms=%d", fn.__name__, elapsed_ms)
+            raise
+
+    wrapper.__signature__ = sig
+    wrapper.__wrapped__ = fn
+    return wrapper
+
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -144,6 +183,7 @@ def _fmt_money(val: Any) -> str:
 # ===================================================================
 
 @mcp.tool()
+@_log_tool_call
 async def search_nonprofit(query: str, state: str | None = None) -> str:
     """Search for tax-exempt nonprofits by name in the IRS Business Master File (~2M orgs).
 
@@ -202,6 +242,7 @@ async def search_nonprofit(query: str, state: str | None = None) -> str:
 
 
 @mcp.tool()
+@_log_tool_call
 async def lookup_ein(ein: str) -> str:
     """Look up a specific organization by EIN. Returns BMF reference data
     plus the 5 most recent IRS 990 filings with revenue, expenses, and assets.
@@ -263,6 +304,7 @@ async def lookup_ein(ein: str) -> str:
 
 
 @mcp.tool()
+@_log_tool_call
 async def search_grants(recipient: str, min_amount: int | None = None) -> str:
     """Search foundation grants (from 990PF filings) by recipient name.
     The grants table has ~12.5M rows. Returns funder name/EIN, recipient,
@@ -318,6 +360,7 @@ async def search_grants(recipient: str, min_amount: int | None = None) -> str:
 
 
 @mcp.tool()
+@_log_tool_call
 async def search_daf_grants(recipient: str) -> str:
     """Search Donor-Advised Fund (DAF) disbursements from Schedule I by
     recipient name. DAFs are intermediary giving vehicles — the funder_name
@@ -367,6 +410,7 @@ async def search_daf_grants(recipient: str) -> str:
 
 
 @mcp.tool()
+@_log_tool_call
 async def org_officers(ein: str) -> str:
     """Get officers, directors, trustees, and key employees for an organization.
     Returns data from the most recent 990 filing.
@@ -389,10 +433,17 @@ async def org_officers(ein: str) -> str:
                r.tax_year, r.org_name
         FROM officers o
         JOIN returns r ON o.object_id = r.object_id
-        WHERE o.ein = :ein
-        AND r.tax_year = (
-            SELECT MAX(r2.tax_year) FROM returns r2
+        -- Scope to the SINGLE canonical (latest) filing's object_id, NOT
+        -- `tax_year = MAX(tax_year)`: an org can have >1 filing at its max year
+        -- (amended/re-filed), and the bare tax_year match returns officers from
+        -- ALL of them -> double-counted rows. object_id is unique (PK) so the
+        -- (tax_year DESC, object_id DESC) pick is deterministic (latest submission
+        -- wins). Mirrors the org/{ein}.html officers display path. followup_queue #291.
+        WHERE o.object_id = (
+            SELECT r2.object_id FROM returns r2
             WHERE r2.ein = :ein AND r2.return_type IN ('990','990EZ','990PF')
+            ORDER BY r2.tax_year DESC, r2.object_id DESC
+            LIMIT 1
         )
         ORDER BY o.reportable_comp_filing_org DESC
         LIMIT 50
@@ -416,6 +467,7 @@ async def org_officers(ein: str) -> str:
 
 
 @mcp.tool()
+@_log_tool_call
 async def org_grants_made(ein: str, limit: int = 50) -> str:
     """Get grants made by a private foundation (by funder EIN).
     Only returns grants with grant_type='paid'. The ein in the grants
@@ -452,6 +504,7 @@ async def org_grants_made(ein: str, limit: int = 50) -> str:
 
 
 @mcp.tool()
+@_log_tool_call
 async def run_990_sql(sql: str) -> str:
     """Run arbitrary read-only SQL against the 990 nonprofit database.
     The database has ~5M filings, ~12.5M grants, ~42M officer records,
@@ -463,9 +516,11 @@ async def run_990_sql(sql: str) -> str:
     you want future commitments. The grants.ein is the FUNDER, not the
     recipient.
 
-    COVERAGE: the contractors and top_employees tables are parsed from
-    Form 990-PF filings only — an empty result for a Form 990/990-EZ
-    filer means not-yet-parsed, NOT "none reported."
+    COVERAGE: contractors are parsed from Form 990 and 990-PF filings —
+    an empty result means none reported above the $100K threshold.
+    top_employees covers Form 990-PF; Form-990 highest-compensated
+    employees appear in the officers table flagged
+    is_highest_compensated_employee (not duplicated in top_employees).
 
     Args:
         sql: A SELECT query to run. Must be read-only. Include LIMIT clause.
@@ -488,6 +543,7 @@ async def run_990_sql(sql: str) -> str:
 # ===================================================================
 
 @mcp.tool()
+@_log_tool_call
 async def search_federal_register(query: str, type: str | None = None, year: int | None = None) -> str:
     """Search Federal Register documents (~1M documents, 1994-present) by keyword.
     Covers rules, proposed rules, notices, and presidential documents.
@@ -547,6 +603,7 @@ async def search_federal_register(query: str, type: str | None = None, year: int
 
 
 @mcp.tool()
+@_log_tool_call
 async def search_legislation(query: str, congress: int | None = None) -> str:
     """Search congressional bills and resolutions (~168K records, Congresses 93-119).
     Returns bill ID, title, policy area, sponsor, cosponsor count, and summary.
@@ -604,6 +661,7 @@ async def search_legislation(query: str, congress: int | None = None) -> str:
 
 
 @mcp.tool()
+@_log_tool_call
 async def lookup_member(name: str) -> str:
     """Search for a member of Congress by name. Returns bioguide ID, party,
     state, chamber, and whether they currently serve. The bioguide_id is
@@ -635,6 +693,7 @@ async def lookup_member(name: str) -> str:
 
 
 @mcp.tool()
+@_log_tool_call
 async def member_trades(bioguide_id: str) -> str:
     """Get stock trades disclosed by a member of Congress. Returns ticker,
     asset description, transaction type, amount range, and date.
@@ -670,6 +729,7 @@ async def member_trades(bioguide_id: str) -> str:
 
 
 @mcp.tool()
+@_log_tool_call
 async def search_lobbying(query: str, year: int | None = None) -> str:
     """Search lobbying disclosure filings (~1.9M filings, 1999-2026) by
     client or registrant name. Returns registrant, client, issue areas,
@@ -746,8 +806,9 @@ async def search_lobbying(query: str, year: int | None = None) -> str:
 
 
 @mcp.tool()
+@_log_tool_call
 async def search_comments(query: str, agency: str | None = None) -> str:
-    """Search public comments on federal regulations (~3.9M comment headers).
+    """Search public comments on federal regulations (~9.9M comment headers).
     Most comments are from FWS, EPA, FDA, and APHIS. Returns comment ID,
     title, submitter, agency, docket, and date.
 
@@ -800,12 +861,13 @@ async def search_comments(query: str, agency: str | None = None) -> str:
 
 
 @mcp.tool()
+@_log_tool_call
 async def run_openregs_sql(sql: str) -> str:
     """Run arbitrary read-only SQL against the OpenRegs government database.
 
     Key tables and row counts:
     - federal_register (~994K) — FR documents 1994-present
-    - dockets (~165K), documents (~1.2M), comments (~3.9M) — Regulations.gov
+    - dockets (~165K), documents (~1.2M), comments (~9.9M) — Regulations.gov
     - legislation (~168K), legislation_actions, legislation_cosponsors
     - congress_members (~12.8K), committee_memberships, committees
     - congressional_record (~879K), crec_speakers, crec_bills
