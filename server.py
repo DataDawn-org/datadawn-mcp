@@ -32,8 +32,8 @@ logger = logging.getLogger("datadawn-mcp")
 
 
 # ---------------------------------------------------------------------------
-# Tool-call logging decorator: per-call tool name + elapsed-ms instrumentation
-# (logs arg names only, never values).
+# Tool-call logging decorator (added 2026-05-24 for UX audit instrumentation —
+# see bestpractices/ux_audit_2026_05/A_usage_and_instrumentation.md §9).
 #
 # FastMCP introspects the wrapped function via inspect.signature() to build
 # the tool's JSON-schema; functools.wraps + an explicit __signature__ set
@@ -433,14 +433,16 @@ async def org_officers(ein: str) -> str:
                r.tax_year, r.org_name
         FROM officers o
         JOIN returns r ON o.object_id = r.object_id
-        -- Scope to the SINGLE canonical (latest) filing's object_id, NOT
-        -- `tax_year = MAX(tax_year)`: an org can have >1 filing at its max year
-        -- (amended/re-filed), and the bare tax_year match returns officers from
-        -- ALL of them -> double-counted rows. object_id is unique (PK) so the
-        -- (tax_year DESC, object_id DESC) pick is deterministic (latest submission
-        -- wins). Mirrors the org/{ein}.html officers display path. followup_queue #291.
+        -- Scope to the org's most recent CANONICAL filing (canonical_returns:
+        -- one canonical filing per ein + tax_year + return_type; amended filings
+        -- supersede originals — Phase-1 canonical layer, 2026-07-06). The former
+        -- `ORDER BY tax_year DESC, object_id DESC` pick was deterministic but
+        -- object_id is release-batch order, NOT recency: it picked a superseded
+        -- filing in ~24% of multi-filing years. The ORDER BY here now only picks
+        -- the most recent filing ACROSS canonical rows (a display choice), never
+        -- between an amendment and its original. followup_queue #291.
         WHERE o.object_id = (
-            SELECT r2.object_id FROM returns r2
+            SELECT r2.object_id FROM canonical_returns r2
             WHERE r2.ein = :ein AND r2.return_type IN ('990','990EZ','990PF')
             ORDER BY r2.tax_year DESC, r2.object_id DESC
             LIMIT 1
@@ -448,7 +450,16 @@ async def org_officers(ein: str) -> str:
         ORDER BY o.reportable_comp_filing_org DESC
         LIMIT 50
     """
-    rows = await _query(BASE_990, DB_990, sql, {"ein": ein})
+    # TRANSITION FALLBACK (remove after the Aug-1 2026 monthly deploy): the LIVE public
+    # DB gains the canonical_returns view at that deploy. Until then a canonical query
+    # against it errors ("no such table") — fall back to the pre-canonical pick so
+    # org_officers keeps working either side of the deploy. The fallback never fires
+    # once the view is live.
+    try:
+        rows = await _query(BASE_990, DB_990, sql, {"ein": ein})
+    except Exception:
+        legacy_sql = sql.replace("FROM canonical_returns r2", "FROM returns r2")
+        rows = await _query(BASE_990, DB_990, legacy_sql, {"ein": ein})
 
     if not rows:
         return f"No officers found for EIN {ein}."
@@ -507,9 +518,14 @@ async def org_grants_made(ein: str, limit: int = 50) -> str:
 @_log_tool_call
 async def run_990_sql(sql: str) -> str:
     """Run arbitrary read-only SQL against the 990 nonprofit database.
-    The database has ~5M filings, ~12.5M grants, ~42M officer records,
-    and ~2M BMF records. Key tables: returns, grants, officers, bmf,
-    schedule_i_grants, capital_gains, investments, related_orgs.
+    ~5.4M filings, ~14M foundation grants, ~44.5M officer records, ~2M BMF
+    records. Key tables: returns; grants (990-PF foundation grants — ein is
+    the FUNDER); schedule_i_990 (the COMPLETE Schedule I domestic-grants table
+    from ALL 990 filers — use this for grants received/made by public
+    charities); officers; bmf; capital_gains; investments; related_orgs.
+    NOTE: `schedule_i_grants` is NOT a general table — it holds only a curated
+    set of ~19 hand-picked DAF sponsors (Fidelity, Schwab, …). Use it ONLY for
+    DAF-specific queries; use `schedule_i_990` for the full Schedule I population.
 
     IMPORTANT: Always filter returns by return_type IN ('990','990EZ')
     to exclude 990-T filings. Filter grants by grant_type='paid' unless
