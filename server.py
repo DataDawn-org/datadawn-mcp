@@ -893,6 +893,9 @@ async def run_openregs_sql(sql: str) -> str:
     - spending_awards (~864K), cfr_sections (~123K)
     - hearings (~46K), hearing_witnesses, hearing_members
     - fec_contributions (~4.4M), fec_candidates, fec_committees
+    - fec_employer_totals/_to_candidate/_to_party — employer keys are verbatim strings from FEC
+      filings and may denote a sole proprietorship or eponymous business. Counts reflect
+      contributions, not employees (a key with 27 contributions is NOT "27 employees").
     - fara_registrants, fara_foreign_principals, fara_short_forms
     - nominations (~40K), treaties (~777)
     - crs_reports (~13.6K), gao_reports (~16.6K)
