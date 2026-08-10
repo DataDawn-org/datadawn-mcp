@@ -1,4 +1,4 @@
-# leak-gate canary 20260810-145957
+# leak-gate canary 20260810-150001
 
 Single synthetic, publication-safe sample. The CI scan MUST fail on it.
 Rotating one class per run: CI does not echo matched content (public logs),
