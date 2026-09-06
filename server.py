@@ -824,12 +824,16 @@ async def search_lobbying(query: str, year: int | None = None) -> str:
 @mcp.tool()
 @_log_tool_call
 async def search_comments(query: str, agency: str | None = None) -> str:
-    """Search public comments on federal regulations (~9.9M comment headers).
-    Most comments are from FWS, EPA, FDA, and APHIS. Returns comment ID,
-    title, submitter, agency, docket, and date.
+    """Search the TITLES of public comments on federal regulations — NOT the comment
+    bodies. Full-text search runs over ~10.4M comment HEADERS (title, submitter,
+    agency, docket, date); the comment text itself is held for only ~4.8% of comments
+    (the `comment_details` table, ~483K rows) and is NOT searched by this tool. A hit
+    means a word appeared in the title; a miss says nothing about what commenters wrote.
+    To search the held bodies, query `comment_details.comment_text` with run_openregs_sql.
+    Returns comment ID, title, submitter, agency, docket, and date.
 
     Args:
-        query: Search keywords (uses full-text search on comment titles).
+        query: Search keywords, matched against comment TITLES only.
         agency: Optional agency code to filter (e.g. "EPA", "FDA", "FWS").
     """
     where = ""
