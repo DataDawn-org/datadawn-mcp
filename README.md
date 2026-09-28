@@ -7,6 +7,8 @@ An MCP (Model Context Protocol) server that gives AI agents direct access to two
 
 The server proxies queries to the Datasette JSON API — no API keys or database files needed.
 
+Its queries reach data.datadawn.org and regs.datadawn.org like any other client. How DataDawn's sites handle visitor data (what our servers record, the one cookie, how long logs are kept): https://datadawn.org/privacy
+
 ## Install
 
 ```bash
