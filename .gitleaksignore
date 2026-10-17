@@ -1,0 +1,16 @@
+# Synthetic credential dummies — NOT real secrets.
+#
+# scripts/test-leak-control.env was committed 2026-05-28 as a deliberate
+# "blocked-state proof" for the Gitleaks CI gate: fake credentials planted to
+# verify gitleaks BLOCKS credential shapes. The file's own header read
+# "Synthetic dummies — blocked-state proof for Gitleaks CI." It was removed from
+# HEAD; the values live only in these two historical commits and are fake by
+# construction. Ignored here so a full-history `gitleaks detect` reads clean
+# instead of reporting 4 benign findings as "leaks". Verified synthetic 2026-06-14.
+#
+# Scoped per-finding (commit:file:rule:line) so nothing else is masked, and so the
+# gitleaks rules themselves stay live for any future real occurrence.
+372b0bcecf7b4c6e0e75bb9ac653d10e2b1bd8e4:scripts/test-leak-control.env:dd-aws-named-r2-secret:3
+372b0bcecf7b4c6e0e75bb9ac653d10e2b1bd8e4:scripts/test-leak-control.env:generic-api-key:2
+cd62aec732b0116f774bc9c990ccea7ec636761e:scripts/test-leak-control.env:generic-api-key:3
+cd62aec732b0116f774bc9c990ccea7ec636761e:scripts/test-leak-control.env:dd-aws-named-r2-secret:4
