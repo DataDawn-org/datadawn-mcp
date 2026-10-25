@@ -318,11 +318,15 @@ async def search_grants(recipient: str, min_amount: int | None = None) -> str:
     if min_amount:
         having = f"AND g.amount >= {int(min_amount)}"
 
+    # Canonical filings only (decisions_log §572, Tier 0): `grants` stores superseded filings' rows too, so without
+    # this restriction an amended year's grants came back twice and a reader's sum double counted them.
+    # canonical_filings is the materialized canonical set (990_schema.md), indexed for corpus-scale joins like this one.
     count_sql = f"""
         SELECT COUNT(*) AS n
         FROM grants g
         WHERE g.id IN (SELECT rowid FROM fts_grants WHERE fts_grants MATCH :q)
         AND g.grant_type = 'paid'
+        AND g.object_id IN (SELECT object_id FROM canonical_filings)
         {having}
     """
     sql = f"""
@@ -334,6 +338,7 @@ async def search_grants(recipient: str, min_amount: int | None = None) -> str:
             SELECT rowid FROM fts_grants WHERE fts_grants MATCH :q
         )
         AND g.grant_type = 'paid'
+        AND g.object_id IN (SELECT object_id FROM canonical_filings)
         {having}
         ORDER BY g.amount DESC
         LIMIT {DEFAULT_LIMIT}
@@ -491,11 +496,13 @@ async def org_grants_made(ein: str, limit: int = 50) -> str:
     ein = ein.replace("-", "").strip()
     limit = min(int(limit), 100)
 
+    # Canonical filings only, as in search_grants (decisions_log §572): an amended year's grants once came back twice.
     sql = f"""
         SELECT g.recipient_name, g.recipient_state, g.amount,
                g.purpose, g.tax_year
         FROM grants g
         WHERE g.ein = :ein AND g.grant_type = 'paid'
+        AND g.object_id IN (SELECT object_id FROM canonical_filings)
         ORDER BY g.tax_year DESC, g.amount DESC
         LIMIT {limit}
     """
